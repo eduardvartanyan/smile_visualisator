@@ -3,6 +3,7 @@ import os
 
 import asyncio
 import requests
+import logging
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
@@ -18,54 +19,76 @@ API_KEY = os.getenv("BACKEND_API_TOKEN")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+logger = logging.getLogger(__name__)
+
 
 @dp.message(CommandStart())
 async def start(message: types.Message):
     await message.answer("Отправь фото — я оживлю его 🎬")
 
-
-@dp.message(lambda message: message.photo)
+from aiogram import F
+@dp.message(F.photo)
 async def handle_photo(message: types.Message):
+    logger.info("PHOTO HANDLER START user_id=%s", message.from_user.id if message.from_user else "unknown")
 
-    photo = message.photo[-1]
-    file = await bot.get_file(photo.file_id)
+    try:
+        photo = message.photo[-1]
+        logger.info("PHOTO RECEIVED file_id=%s", photo.file_id)
 
-    image_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+        file = await bot.get_file(photo.file_id)
+        logger.info("FILE PATH=%s", file.file_path)
 
-    await message.answer("Создаю видео... ⏳")
+        image_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+        logger.info("IMAGE URL=%s", image_url)
 
-    r = requests.post(
-        f"{API_URL}/generate-video",
-        headers={
-            "X-API-Key": API_KEY
-        },
-        json={
-            "image_url": image_url
-        }
-    )
+        await message.answer("Создаю видео... ⏳")
+        logger.info("WAIT MESSAGE SENT")
 
-    data = r.json()
-
-    task_id = data["yes_task_id"]
-
-    while True:
-
-        await asyncio.sleep(10)
-
-        r = requests.get(
-            f"{API_URL}/task/{task_id}",
-            headers={
-                "X-API-Key": API_KEY
-            }
+        r = requests.post(
+            f"{API_URL}/generate-video",
+            headers={"X-API-Key": API_KEY},
+            json={"image_url": image_url},
+            timeout=60
         )
 
-        status = r.json()
+        logger.info("BACKEND STATUS=%s", r.status_code)
+        logger.info("BACKEND RESPONSE=%s", r.text)
 
-        result_url = status.get("result_url")
+        r.raise_for_status()
 
-        if result_url:
-            await message.answer_video(result_url)
-            break
+        data = r.json()
+        task_id = data["yes_task_id"]
+        logger.info("TASK ID=%s", task_id)
+
+        while True:
+            await asyncio.sleep(10)
+
+            r = requests.get(
+                f"{API_URL}/task/{task_id}",
+                headers={"X-API-Key": API_KEY},
+                timeout=60
+            )
+
+            logger.info("TASK POLL STATUS=%s", r.status_code)
+            logger.info("TASK POLL RESPONSE=%s", r.text)
+
+            r.raise_for_status()
+
+            status_data = r.json()
+            result_url = status_data.get("result_url")
+
+            if result_url:
+                await message.answer_video(result_url)
+                logger.info("VIDEO SENT result_url=%s", result_url)
+                break
+
+    except Exception as e:
+        logger.exception("ERROR IN PHOTO HANDLER")
+        await message.answer(f"Ошибка при обработке фото: {e}")
 
 
 async def main():

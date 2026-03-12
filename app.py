@@ -37,7 +37,7 @@ YES_STATUS_URL_TEMPLATE = "https://api.yesai.su/v2/yesvideo/animations/{task_id}
 YES_CUSTOMER_ID = "ncsehpgt"
 YES_VERSION = "2.5"
 YES_DURATION = "5"
-YES_DIMENSIONS = "16:9"
+YES_DIMENSIONS = "4:3"
 
 POLL_INTERVAL_SEC = 5
 POLL_TIMEOUT_SEC = 60 * 5
