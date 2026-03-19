@@ -1,26 +1,22 @@
 from dotenv import load_dotenv
 import os
-import logging
-from typing import Optional
+import json
+import uuid
+from pathlib import Path
 
 import requests
 import replicate
 from fastapi import FastAPI, HTTPException, Header
-from pydantic import BaseModel, HttpUrl
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 YES_API_TOKEN = os.getenv("YES_API_TOKEN")
 BACKEND_API_TOKEN = os.getenv("BACKEND_API_TOKEN")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://91.229.11.38")
 
 if not REPLICATE_API_TOKEN:
     raise RuntimeError("REPLICATE_API_TOKEN не найден")
@@ -32,6 +28,21 @@ if not BACKEND_API_TOKEN:
     raise RuntimeError("BACKEND_API_TOKEN не найден")
 
 
+def check_api_key(x_api_key: str | None):
+    if x_api_key != BACKEND_API_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+GENERATED_DIR = STATIC_DIR / "generated"
+RESULT_DIR = STATIC_DIR / "result"
+TASKS_DIR = BASE_DIR / "tasks"
+
+GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+RESULT_DIR.mkdir(parents=True, exist_ok=True)
+TASKS_DIR.mkdir(parents=True, exist_ok=True)
+
 YES_CREATE_URL = "https://api.yesai.su/v2/yesvideo/aniimage/kling"
 YES_STATUS_URL_TEMPLATE = "https://api.yesai.su/v2/yesvideo/animations/{task_id}"
 
@@ -40,58 +51,83 @@ YES_VERSION = "2.5"
 YES_DURATION = "5"
 YES_DIMENSIONS = "16:9"
 
-DEFAULT_EDIT_PROMPT = (
-    "natural healthy teeth, subtle smile improvement, "
-    "slight reduction of nasolabial folds, natural skin texture, "
-    "professional portrait retouching, realistic lighting"
-)
-
-DEFAULT_ANIMATE_PROMPT = (
-    "The person looks into the camera, smiles naturally, "
-    "turns head slightly and nods, realistic skin texture, 4k"
-)
-
-
 app = FastAPI(title="AI Animation Backend")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 class GenerateVideoRequest(BaseModel):
-    image_url: HttpUrl
-    edit_prompt: Optional[str] = DEFAULT_EDIT_PROMPT
-    animate_prompt: Optional[str] = DEFAULT_ANIMATE_PROMPT
+    image_url: str
+    edit_prompt: str = (
+        "perfect white teeth, Hollywood smile, smooth nasolabial folds, "
+        "youthful face skin, natural skin texture, professional portrait retouching, realistic lighting"
+    )
+    animate_prompt: str = (
+        "The person looks into the camera, smiles wide showing beautiful white teeth, "
+        "turns head slightly and nods, realistic skin texture, 4k"
+    )
 
 
-def check_api_key(x_api_key: str | None):
-    if x_api_key != BACKEND_API_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+def task_file_path(task_id: int) -> Path:
+    return TASKS_DIR / f"{task_id}.json"
+
+
+def save_task_meta(task_id: int, data: dict) -> None:
+    with open(task_file_path(task_id), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_task_meta(task_id: int) -> dict | None:
+    path = task_file_path(task_id)
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def download_file(url: str, dest_path: Path) -> None:
+    response = requests.get(url, timeout=120, stream=True)
+    response.raise_for_status()
+
+    with open(dest_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
 
 
 def generate_image_with_flux(source_image_url: str, prompt: str) -> str:
-    logger.info("Start Replicate edit: %s", source_image_url)
-
     input_data = {
         "prompt": prompt,
         "input_image": source_image_url,
         "output_format": "jpg",
     }
 
-    try:
-        output = replicate.run(
-            "black-forest-labs/flux-kontext-pro",
-            input=input_data,
-        )
-    except Exception as e:
-        logger.exception("Replicate error")
-        raise RuntimeError(f"Ошибка Replicate: {e}")
+    output = replicate.run(
+        "black-forest-labs/flux-kontext-pro",
+        input=input_data,
+    )
 
-    image_url = output.url
-    logger.info("Replicate done: %s", image_url)
-    return image_url
+    return output.url
 
 
-def create_animation_task(image_url: str, animate_prompt: str) -> int:
-    logger.info("Create YesAI task for image: %s", image_url)
+def save_generated_image_locally(remote_image_url: str) -> str:
+    file_name = f"{uuid.uuid4().hex}.jpg"
+    local_path = GENERATED_DIR / file_name
 
+    download_file(remote_image_url, local_path)
+
+    return f"{PUBLIC_BASE_URL}/static/generated/{file_name}"
+
+
+def save_result_video_locally(remote_video_url: str) -> str:
+    file_name = f"{uuid.uuid4().hex}.mp4"
+    local_path = RESULT_DIR / file_name
+
+    download_file(remote_video_url, local_path)
+
+    return f"{PUBLIC_BASE_URL}/static/result/{file_name}"
+
+
+def create_animation_task(image_url: str, animate_prompt: str) -> dict:
     headers = {
         "Authorization": f"Bearer {YES_API_TOKEN}",
         "Content-Type": "application/json",
@@ -107,29 +143,31 @@ def create_animation_task(image_url: str, animate_prompt: str) -> int:
         "customer_id": YES_CUSTOMER_ID,
     }
 
-    try:
-        response = requests.post(
-            YES_CREATE_URL,
-            headers=headers,
-            json=payload,
-            timeout=60,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except Exception as e:
-        logger.exception("YesAI create task error")
-        raise RuntimeError(f"Ошибка создания задачи YesAI: {e}")
+    print("YESAI CREATE URL:", YES_CREATE_URL)
+    print("YESAI PAYLOAD:", payload)
+
+    response = requests.post(
+        YES_CREATE_URL,
+        headers=headers,
+        json=payload,
+        timeout=60,
+    )
+
+    print("YESAI STATUS:", response.status_code)
+    print("YESAI RESPONSE:", response.text)
+
+    response.raise_for_status()
+
+    data = response.json()
 
     if not data.get("success"):
-        raise RuntimeError(f"YesAI вернул ошибку: {data}")
+        raise RuntimeError(f"Ошибка создания задачи анимации: {data}")
 
-    try:
-        task_id = data["results"]["animation_data"]["id"]
-    except KeyError as e:
-        raise RuntimeError(f"Не удалось получить id задачи YesAI: {data}") from e
+    animation_data = data.get("results", {}).get("animation_data")
+    if not animation_data:
+        raise RuntimeError(f"В ответе нет animation_data: {data}")
 
-    logger.info("YesAI task created: %s", task_id)
-    return task_id
+    return animation_data
 
 
 def get_animation_status(task_id: int) -> dict:
@@ -139,21 +177,17 @@ def get_animation_status(task_id: int) -> dict:
     }
 
     status_url = YES_STATUS_URL_TEMPLATE.format(task_id=task_id)
+    response = requests.get(status_url, headers=headers, timeout=60)
+    response.raise_for_status()
 
-    try:
-        response = requests.get(status_url, headers=headers, timeout=60)
-        response.raise_for_status()
-        data = response.json()
-    except Exception as e:
-        logger.exception("YesAI status check error")
-        raise RuntimeError(f"Ошибка проверки статуса YesAI: {e}")
+    data = response.json()
 
     if not data.get("success"):
-        raise RuntimeError(f"YesAI вернул ошибку статуса: {data}")
+        raise RuntimeError(f"Ошибка при проверке статуса: {data}")
 
     animation_data = data.get("results", {}).get("animation_data")
     if not animation_data:
-        raise RuntimeError(f"В ответе YesAI нет animation_data: {data}")
+        raise RuntimeError(f"В ответе нет animation_data: {data}")
 
     return animation_data
 
@@ -164,55 +198,65 @@ def health():
 
 
 @app.post("/generate-video")
-def generate_video(
-    payload: GenerateVideoRequest,
-    x_api_key: str | None = Header(default=None),
-):
+def generate_video(payload: GenerateVideoRequest, x_api_key: str | None = Header(default=None)):
     check_api_key(x_api_key)
 
     try:
-        generated_image_url = generate_image_with_flux(
-            str(payload.image_url),
-            payload.edit_prompt or DEFAULT_EDIT_PROMPT,
-        )
+        remote_generated_image_url = generate_image_with_flux(payload.image_url, payload.edit_prompt)
+        local_generated_image_url = save_generated_image_locally(remote_generated_image_url)
 
-        yes_task_id = create_animation_task(
-            generated_image_url,
-            payload.animate_prompt or DEFAULT_ANIMATE_PROMPT,
-        )
+        animation_data = create_animation_task(local_generated_image_url, payload.animate_prompt)
 
-        return {
-            "success": True,
-            "yes_task_id": yes_task_id,
-            "generated_image_url": generated_image_url,
-            "status": "processing",
-        }
+        task_id = animation_data["id"]
+        status_description = animation_data.get("status_description", "unknown")
 
-    except Exception as e:
-        logger.exception("generate_video failed")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/task/{task_id}")
-def task_status(
-    task_id: int,
-    x_api_key: str | None = Header(default=None),
-):
-    check_api_key(x_api_key)
-
-    try:
-        animation_data = get_animation_status(task_id)
+        save_task_meta(task_id, {
+            "task_id": task_id,
+            "source_image": payload.image_url,
+            "generated_image": local_generated_image_url,
+            "result": "",
+            "result_cached": False,
+        })
 
         return {
             "success": True,
             "task_id": task_id,
-            "status": animation_data.get("status"),
-            "status_description": animation_data.get("status_description"),
-            "result_url": animation_data.get("result_url", ""),
-            "generated_image_url": animation_data.get("image_url", ""),
-            "animation_data": animation_data,
+            "status_description": status_description,
+            "source_image": payload.image_url,
+            "generated_image": local_generated_image_url,
         }
 
     except Exception as e:
-        logger.exception("task_status failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/task/{task_id}")
+def task_status(task_id: int, x_api_key: str | None = Header(default=None)):
+    check_api_key(x_api_key)
+
+    try:
+        animation_data = get_animation_status(task_id)
+        meta = load_task_meta(task_id) or {}
+
+        result_url = meta.get("result", "")
+
+        # Если видео уже готово у внешнего сервиса, но ещё не скачано к нам — скачиваем и кэшируем локально
+        remote_result_url = animation_data.get("result_url", "")
+        if remote_result_url and not meta.get("result_cached", False):
+            local_result_url = save_result_video_locally(remote_result_url)
+            meta["result"] = local_result_url
+            meta["result_cached"] = True
+            save_task_meta(task_id, meta)
+            result_url = local_result_url
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "status_description": animation_data.get("status_description", "unknown"),
+            "source_image": meta.get("source_image", ""),
+            "generated_image": meta.get("generated_image", ""),
+            "result": result_url,
+        }
+
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

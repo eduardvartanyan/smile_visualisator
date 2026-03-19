@@ -61,7 +61,7 @@ async def handle_photo(message: types.Message):
         r.raise_for_status()
 
         data = r.json()
-        task_id = data["yes_task_id"]
+        task_id = data["task_id"]
         logger.info("TASK ID=%s", task_id)
 
         while True:
@@ -79,7 +79,7 @@ async def handle_photo(message: types.Message):
             r.raise_for_status()
 
             status_data = r.json()
-            result_url = status_data.get("result_url")
+            result_url = status_data.get("result")
 
             if result_url:
                 await message.answer_video(result_url)
