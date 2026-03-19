@@ -16,7 +16,7 @@ load_dotenv()
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 YES_API_TOKEN = os.getenv("YES_API_TOKEN")
 BACKEND_API_TOKEN = os.getenv("BACKEND_API_TOKEN")
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://91.229.11.38")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
 
 if not REPLICATE_API_TOKEN:
     raise RuntimeError("REPLICATE_API_TOKEN не найден")
@@ -26,6 +26,9 @@ if not YES_API_TOKEN:
 
 if not BACKEND_API_TOKEN:
     raise RuntimeError("BACKEND_API_TOKEN не найден")
+
+if not PUBLIC_BASE_URL:
+    raise RuntimeError("PUBLIC_BASE_URL не найден")
 
 
 def check_api_key(x_api_key: str | None):
