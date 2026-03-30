@@ -287,7 +287,6 @@ def generate_image(payload: GenerateMediaRequest, x_api_key: str | None = Header
             "success": True,
             "source_image": payload.image_url,
             "generated_image": local_generated_image_url,
-            "used_prompt": enhanced_edit_prompt,  # Добавляем в ответ использованный промпт для отладки
         }
 
         # Добавляем информацию о возрасте и поле в ответ, если они были переданы
@@ -328,7 +327,6 @@ def generate_video(payload: GenerateMediaRequest, x_api_key: str | None = Header
             "generated_image": local_generated_image_url,
             "result": "",
             "result_cached": False,
-            "used_prompt": enhanced_edit_prompt,
         }
 
         # Сохраняем возраст и пол в метаданные задачи
