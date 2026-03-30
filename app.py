@@ -88,10 +88,8 @@ def enhance_edit_prompt_with_person_info(original_prompt: str, age: Optional[str
     if sex:
         if sex == Sex.male:
             gender_desc = "man"
-            gender_desc_ru = "мужчина"
         else:
             gender_desc = "woman"
-            gender_desc_ru = "женщина"
 
         enhancements.append(gender_desc)
 
