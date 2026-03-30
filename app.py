@@ -3,13 +3,14 @@ import os
 import json
 import uuid
 from pathlib import Path
+from enum import Enum
 
 import requests
 import replicate
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-
+from pydantic import BaseModel, Field
+from typing import Optional
 
 load_dotenv()
 
@@ -54,11 +55,16 @@ YES_VERSION = "2.5"
 YES_DURATION = "5"
 YES_DIMENSIONS = "16:9"
 
-app = FastAPI(title="AI Animation Backend")
+app = FastAPI(title="Smile Visualization API")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-class GenerateVideoRequest(BaseModel):
+class Sex(str, Enum):
+    male = "m"
+    female = "f"
+
+
+class GenerateMediaRequest(BaseModel):
     image_url: str
     edit_prompt: str = (
         "perfect white teeth, Hollywood smile, smooth nasolabial folds, "
@@ -68,6 +74,65 @@ class GenerateVideoRequest(BaseModel):
         "The person looks into the camera, smiles wide showing beautiful white teeth, "
         "turns head slightly and nods, realistic skin texture, 4k"
     )
+    age: Optional[str] = Field(None, description="Возраст человека на фото (например: '25', '35 лет', 'ребенок 7 лет')")
+    sex: Optional[Sex] = Field(None, description="Пол человека на фото: m - мужской, f - женский")
+
+
+def enhance_edit_prompt_with_person_info(original_prompt: str, age: Optional[str], sex: Optional[Sex]) -> str:
+    """
+    Дополняет промпт информацией о возрасте и поле человека для улучшения генерации
+    """
+    enhancements = []
+
+    # Добавляем информацию о поле
+    if sex:
+        if sex == Sex.male:
+            gender_desc = "man"
+            gender_desc_ru = "мужчина"
+        else:
+            gender_desc = "woman"
+            gender_desc_ru = "женщина"
+
+        enhancements.append(gender_desc)
+
+    # Добавляем информацию о возрасте
+    if age:
+        # Очищаем возраст от текста, оставляем только цифры
+        age_clean = ''.join(filter(str.isdigit, age))
+
+        if age_clean:
+            age_num = int(age_clean)
+
+            # Подбираем описание возраста для английского промпта
+            if age_num < 12:
+                age_desc = f"child about {age_num} years old"
+            elif age_num < 18:
+                age_desc = f"teenager about {age_num} years old"
+            elif age_num < 30:
+                age_desc = f"young adult about {age_num} years old"
+            elif age_num < 45:
+                age_desc = f"adult about {age_num} years old"
+            elif age_num < 60:
+                age_desc = f"middle-aged person about {age_num} years old"
+            else:
+                age_desc = f"elderly person about {age_num} years old"
+
+            enhancements.append(age_desc)
+        else:
+            # Если в строке нет цифр, используем как есть
+            enhancements.append(age)
+
+    # Формируем улучшенный промпт
+    if enhancements:
+        # Создаем описание человека в начале промпта
+        person_description = f"A {', '.join(enhancements)}. "
+
+        # Добавляем основную задачу по ретуши
+        enhanced_prompt = person_description + original_prompt
+    else:
+        enhanced_prompt = original_prompt
+
+    return enhanced_prompt
 
 
 def task_file_path(task_id: int) -> Path:
@@ -83,6 +148,7 @@ def load_task_meta(task_id: int) -> dict | None:
     path = task_file_path(task_id)
     if not path.exists():
         return None
+
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -146,9 +212,6 @@ def create_animation_task(image_url: str, animate_prompt: str) -> dict:
         "customer_id": YES_CUSTOMER_ID,
     }
 
-    print("YESAI CREATE URL:", YES_CREATE_URL)
-    print("YESAI PAYLOAD:", payload)
-
     response = requests.post(
         YES_CREATE_URL,
         headers=headers,
@@ -156,14 +219,15 @@ def create_animation_task(image_url: str, animate_prompt: str) -> dict:
         timeout=60,
     )
 
-    print("YESAI STATUS:", response.status_code)
-    print("YESAI RESPONSE:", response.text)
+    try:
+        data = response.json()
+    except Exception:
+        data = None
 
-    response.raise_for_status()
+    if response.status_code >= 400:
+        raise RuntimeError(f"Ошибка YesAI: status={response.status_code}, body={data or response.text}")
 
-    data = response.json()
-
-    if not data.get("success"):
+    if not data or not data.get("success"):
         raise RuntimeError(f"Ошибка создания задачи анимации: {data}")
 
     animation_data = data.get("results", {}).get("animation_data")
@@ -181,11 +245,17 @@ def get_animation_status(task_id: int) -> dict:
 
     status_url = YES_STATUS_URL_TEMPLATE.format(task_id=task_id)
     response = requests.get(status_url, headers=headers, timeout=60)
-    response.raise_for_status()
 
-    data = response.json()
+    try:
+        data = response.json()
+    except Exception:
+        data = None
 
-    if not data.get("success"):
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"Ошибка проверки статуса YesAI: status={response.status_code}, body={data or response.text}")
+
+    if not data or not data.get("success"):
         raise RuntimeError(f"Ошибка при проверке статуса: {data}")
 
     animation_data = data.get("results", {}).get("animation_data")
@@ -200,12 +270,53 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/generate-video")
-def generate_video(payload: GenerateVideoRequest, x_api_key: str | None = Header(default=None)):
+@app.post("/generate-image")
+def generate_image(payload: GenerateMediaRequest, x_api_key: str | None = Header(default=None)):
     check_api_key(x_api_key)
 
     try:
-        remote_generated_image_url = generate_image_with_flux(payload.image_url, payload.edit_prompt)
+        # Улучшаем промпт с учетом возраста и пола
+        enhanced_edit_prompt = enhance_edit_prompt_with_person_info(
+            payload.edit_prompt,
+            payload.age,
+            payload.sex
+        )
+
+        remote_generated_image_url = generate_image_with_flux(payload.image_url, enhanced_edit_prompt)
+        local_generated_image_url = save_generated_image_locally(remote_generated_image_url)
+
+        response_data = {
+            "success": True,
+            "source_image": payload.image_url,
+            "generated_image": local_generated_image_url,
+            "used_prompt": enhanced_edit_prompt,  # Добавляем в ответ использованный промпт для отладки
+        }
+
+        # Добавляем информацию о возрасте и поле в ответ, если они были переданы
+        if payload.age:
+            response_data["age"] = payload.age
+        if payload.sex:
+            response_data["sex"] = payload.sex.value
+
+        return response_data
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate-video")
+def generate_video(payload: GenerateMediaRequest, x_api_key: str | None = Header(default=None)):
+    check_api_key(x_api_key)
+
+    try:
+        # Улучшаем промпт для изображения с учетом возраста и пола
+        enhanced_edit_prompt = enhance_edit_prompt_with_person_info(
+            payload.edit_prompt,
+            payload.age,
+            payload.sex
+        )
+
+        remote_generated_image_url = generate_image_with_flux(payload.image_url, enhanced_edit_prompt)
         local_generated_image_url = save_generated_image_locally(remote_generated_image_url)
 
         animation_data = create_animation_task(local_generated_image_url, payload.animate_prompt)
@@ -213,21 +324,38 @@ def generate_video(payload: GenerateVideoRequest, x_api_key: str | None = Header
         task_id = animation_data["id"]
         status_description = animation_data.get("status_description", "unknown")
 
-        save_task_meta(task_id, {
+        meta_data = {
             "task_id": task_id,
             "source_image": payload.image_url,
             "generated_image": local_generated_image_url,
             "result": "",
             "result_cached": False,
-        })
+            "used_prompt": enhanced_edit_prompt,
+        }
 
-        return {
+        # Сохраняем возраст и пол в метаданные задачи
+        if payload.age:
+            meta_data["age"] = payload.age
+        if payload.sex:
+            meta_data["sex"] = payload.sex.value
+
+        save_task_meta(task_id, meta_data)
+
+        response_data = {
             "success": True,
             "task_id": task_id,
             "status_description": status_description,
             "source_image": payload.image_url,
             "generated_image": local_generated_image_url,
         }
+
+        # Добавляем информацию о возрасте и поле в ответ
+        if payload.age:
+            response_data["age"] = payload.age
+        if payload.sex:
+            response_data["sex"] = payload.sex.value
+
+        return response_data
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -242,9 +370,8 @@ def task_status(task_id: int, x_api_key: str | None = Header(default=None)):
         meta = load_task_meta(task_id) or {}
 
         result_url = meta.get("result", "")
-
-        # Если видео уже готово у внешнего сервиса, но ещё не скачано к нам — скачиваем и кэшируем локально
         remote_result_url = animation_data.get("result_url", "")
+
         if remote_result_url and not meta.get("result_cached", False):
             local_result_url = save_result_video_locally(remote_result_url)
             meta["result"] = local_result_url
@@ -252,7 +379,7 @@ def task_status(task_id: int, x_api_key: str | None = Header(default=None)):
             save_task_meta(task_id, meta)
             result_url = local_result_url
 
-        return {
+        response_data = {
             "success": True,
             "task_id": task_id,
             "status_description": animation_data.get("status_description", "unknown"),
@@ -260,6 +387,14 @@ def task_status(task_id: int, x_api_key: str | None = Header(default=None)):
             "generated_image": meta.get("generated_image", ""),
             "result": result_url,
         }
+
+        # Добавляем информацию о возрасте и поле в ответ, если они были сохранены
+        if meta.get("age"):
+            response_data["age"] = meta["age"]
+        if meta.get("sex"):
+            response_data["sex"] = meta["sex"]
+
+        return response_data
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
