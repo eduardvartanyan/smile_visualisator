@@ -4,13 +4,22 @@ import json
 import uuid
 from pathlib import Path
 from enum import Enum
+import logging
 
 import requests
 import replicate
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
+
+# Настройка логирования для записи подробных ошибок в лог сервера
+logging.basicConfig(
+    level=logging.ERROR,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -270,7 +279,10 @@ def health():
 
 @app.post("/generate-image")
 def generate_image(payload: GenerateMediaRequest, x_api_key: str | None = Header(default=None)):
-    check_api_key(x_api_key)
+    try:
+        check_api_key(x_api_key)
+    except HTTPException:
+        raise
 
     try:
         # Улучшаем промпт с учетом возраста и пола
@@ -298,12 +310,18 @@ def generate_image(payload: GenerateMediaRequest, x_api_key: str | None = Header
         return response_data
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Логируем полную ошибку на сервере
+        logger.error(f"Error in generate_image: {str(e)}", exc_info=True)
+        # Клиенту возвращаем только статус ошибки
+        raise HTTPException(status_code=500, detail="error")
 
 
 @app.post("/generate-video")
 def generate_video(payload: GenerateMediaRequest, x_api_key: str | None = Header(default=None)):
-    check_api_key(x_api_key)
+    try:
+        check_api_key(x_api_key)
+    except HTTPException:
+        raise
 
     try:
         # Улучшаем промпт для изображения с учетом возраста и пола
@@ -354,12 +372,18 @@ def generate_video(payload: GenerateMediaRequest, x_api_key: str | None = Header
         return response_data
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Логируем полную ошибку на сервере
+        logger.error(f"Error in generate_video: {str(e)}", exc_info=True)
+        # Клиенту возвращаем только статус ошибки
+        raise HTTPException(status_code=500, detail="error")
 
 
 @app.get("/task/{task_id}")
 def task_status(task_id: int, x_api_key: str | None = Header(default=None)):
-    check_api_key(x_api_key)
+    try:
+        check_api_key(x_api_key)
+    except HTTPException:
+        raise
 
     try:
         animation_data = get_animation_status(task_id)
@@ -393,4 +417,17 @@ def task_status(task_id: int, x_api_key: str | None = Header(default=None)):
         return response_data
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Логируем полную ошибку на сервере
+        logger.error(f"Error in task_status: {str(e)}", exc_info=True)
+        # Клиенту возвращаем только статус ошибки
+        raise HTTPException(status_code=500, detail="error")
+
+
+# Обработчик глобальных исключений для всех необработанных ошибок
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"success": False, "error": "error"}
+    )
