@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 from enum import Enum
 import logging
+import sys
 
 import requests
 import replicate
@@ -17,7 +18,10 @@ from typing import Optional
 # Настройка логирования для записи подробных ошибок в лог сервера
 logging.basicConfig(
     level=logging.ERROR,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stderr),  # Явно пишем в stderr (попадает в journald)
+    ]
 )
 logger = logging.getLogger(__name__)
 
