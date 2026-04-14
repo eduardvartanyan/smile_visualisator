@@ -17,6 +17,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 
+from telegram_network import get_requests_proxies_for_url
+
 # Настройка логирования для записи подробных ошибок в лог сервера
 logging.basicConfig(
     level=logging.ERROR,
@@ -237,7 +239,12 @@ def load_task_meta(task_id: int) -> dict | None:
 
 
 def download_file(url: str, dest_path: Path) -> None:
-    response = requests.get(url, timeout=120, stream=True)
+    response = requests.get(
+        url,
+        timeout=120,
+        stream=True,
+        proxies=get_requests_proxies_for_url(url),
+    )
     response.raise_for_status()
 
     with open(dest_path, "wb") as f:

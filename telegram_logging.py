@@ -1,0 +1,90 @@
+import logging
+import os
+import socket
+import threading
+from typing import Optional
+
+import requests
+from urllib3.util import connection as urllib3_connection
+
+from telegram_network import get_requests_proxies_for_url
+
+
+class TelegramErrorHandler(logging.Handler):
+    _ipv4_lock = threading.Lock()
+
+    def __init__(self, bot_token: str, chat_id: str, service_name: str, timeout: int = 10):
+        super().__init__(level=logging.ERROR)
+        self.bot_token = bot_token
+        self.chat_id = str(chat_id)
+        self.service_name = service_name
+        self.timeout = timeout
+        self.hostname = socket.gethostname()
+        self.api_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        self.session = requests.Session()
+        proxies = get_requests_proxies_for_url(self.api_url)
+        if proxies:
+            self.session.proxies.update(proxies)
+
+    def _post(self, payload: dict) -> None:
+        # On hosts with broken IPv6 routing, force Telegram requests over IPv4.
+        with self._ipv4_lock:
+            original_allowed_gai_family = urllib3_connection.allowed_gai_family
+            urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
+            try:
+                self.session.post(
+                    self.api_url,
+                    json=payload,
+                    timeout=self.timeout,
+                )
+            finally:
+                urllib3_connection.allowed_gai_family = original_allowed_gai_family
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+            text = (
+                f"[{self.service_name}] {record.levelname}\n"
+                f"host: {self.hostname}\n\n"
+                f"{message}"
+            )
+
+            self._post(
+                {
+                    "chat_id": self.chat_id,
+                    "text": text[:4000],
+                }
+            )
+        except Exception:
+            self.handleError(record)
+
+
+def setup_telegram_error_logging(service_name: str) -> Optional[TelegramErrorHandler]:
+    bot_token = os.getenv("LOGGER_TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("LOGGER_TELEGRAM_CHAT_ID")
+
+    if not bot_token or not chat_id:
+        return None
+
+    root_logger = logging.getLogger()
+    already_configured = next(
+        (
+            handler for handler in root_logger.handlers
+            if isinstance(handler, TelegramErrorHandler) and handler.service_name == service_name
+        ),
+        None,
+    )
+    if already_configured:
+        return already_configured
+
+    telegram_handler = TelegramErrorHandler(
+        bot_token=bot_token,
+        chat_id=chat_id,
+        service_name=service_name,
+    )
+    telegram_handler.setLevel(logging.ERROR)
+    telegram_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
+    root_logger.addHandler(telegram_handler)
+    return telegram_handler

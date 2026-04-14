@@ -6,7 +6,10 @@ import requests
 import logging
 
 from aiogram import Bot, Dispatcher, types
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandStart
+
+from telegram_network import get_telegram_proxy_url
 
 
 load_dotenv()
@@ -16,7 +19,9 @@ BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 API_URL = "http://91.229.11.38"
 API_KEY = os.getenv("BACKEND_API_TOKEN")
 
-bot = Bot(token=BOT_TOKEN)
+telegram_proxy_url = get_telegram_proxy_url()
+bot_session = AiohttpSession(proxy=telegram_proxy_url) if telegram_proxy_url else None
+bot = Bot(token=BOT_TOKEN, session=bot_session)
 dp = Dispatcher()
 
 logging.basicConfig(
@@ -92,6 +97,8 @@ async def handle_photo(message: types.Message):
 
 
 async def main():
+    # If a webhook was configured previously, Telegram will reject getUpdates until it is removed.
+    await bot.delete_webhook(drop_pending_updates=False)
     await dp.start_polling(bot)
 
 
