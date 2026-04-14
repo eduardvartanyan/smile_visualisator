@@ -32,11 +32,12 @@ class TelegramErrorHandler(logging.Handler):
             original_allowed_gai_family = urllib3_connection.allowed_gai_family
             urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
             try:
-                self.session.post(
+                response = self.session.post(
                     self.api_url,
                     json=payload,
                     timeout=self.timeout,
                 )
+                response.raise_for_status()
             finally:
                 urllib3_connection.allowed_gai_family = original_allowed_gai_family
 

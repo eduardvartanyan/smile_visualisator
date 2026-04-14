@@ -10,9 +10,11 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandStart
 
 from telegram_network import get_telegram_proxy_url
+from telegram_logging import setup_telegram_error_logging
 
 
 load_dotenv()
+setup_telegram_error_logging("ai-bot")
 
 BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 

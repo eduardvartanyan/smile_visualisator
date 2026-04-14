@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 from telegram_network import get_requests_proxies_for_url
+from telegram_logging import setup_telegram_error_logging
 
 # Настройка логирования для записи подробных ошибок в лог сервера
 logging.basicConfig(
@@ -30,6 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+setup_telegram_error_logging("ai-backend")
 
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 YES_API_TOKEN = os.getenv("YES_API_TOKEN")
