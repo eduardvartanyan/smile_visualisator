@@ -10,6 +10,12 @@ sudo systemctl restart ai-bot
 sudo systemctl status ai-bot
 ```
 
+Перезапустить бот логирования:
+```bash
+sudo systemctl restart logger-bot
+sudo systemctl status logger-bot
+```
+
 Установка зависимостей:
 ```bash
 python3 -m venv venv
@@ -21,6 +27,8 @@ python3 -m venv venv
 TG_BOT_TOKEN=...
 BACKEND_API_TOKEN=...
 TELEGRAM_PROXY_URL=socks5://login:password@proxy-host:1080
+LOGGER_TELEGRAM_BOT_TOKEN=...
+LOGGER_TELEGRAM_SUBSCRIBERS_FILE=/home/ai-backend/logger_subscribers.json
 ```
 
 Если для `aiogram` используется `socks5://...`, на сервере может понадобиться поддержка SOCKS для `aiohttp`.
@@ -31,6 +39,7 @@ TELEGRAM_PROXY_URL=socks5://login:password@proxy-host:1080
 - бот запускается через long polling (aiogram start_polling)
 - перед стартом polling бот удаляет старый webhook у Telegram
 - запросы к Telegram Bot API и скачивание telegram file URL можно гнать через TELEGRAM_PROXY_URL
+- logger-bot обрабатывает /subscribe, /unsubscribe и /status; ошибки уходят только подписчикам
 ```
 
 Эндпоинты:

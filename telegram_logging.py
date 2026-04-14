@@ -8,15 +8,15 @@ import requests
 from urllib3.util import connection as urllib3_connection
 
 from telegram_network import get_requests_proxies_for_url
+from telegram_subscriptions import load_subscriber_chat_ids
 
 
 class TelegramErrorHandler(logging.Handler):
     _ipv4_lock = threading.Lock()
 
-    def __init__(self, bot_token: str, chat_id: str, service_name: str, timeout: int = 10):
+    def __init__(self, bot_token: str, service_name: str, timeout: int = 10):
         super().__init__(level=logging.ERROR)
         self.bot_token = bot_token
-        self.chat_id = str(chat_id)
         self.service_name = service_name
         self.timeout = timeout
         self.hostname = socket.gethostname()
@@ -49,12 +49,13 @@ class TelegramErrorHandler(logging.Handler):
                 f"{message}"
             )
 
-            self._post(
-                {
-                    "chat_id": self.chat_id,
-                    "text": text[:4000],
-                }
-            )
+            for chat_id in self.chat_ids():
+                self._post(
+                    {
+                        "chat_id": chat_id,
+                        "text": text[:4000],
+                    }
+                )
         except Exception:
             self.handleError(record)
 
@@ -67,12 +68,17 @@ class TelegramErrorHandler(logging.Handler):
             return f"{message}\n{exc_text}"
         return message
 
+    def chat_ids(self) -> list[str]:
+        return load_subscriber_chat_ids()
+
 
 def setup_telegram_error_logging(service_name: str) -> Optional[TelegramErrorHandler]:
     bot_token = os.getenv("LOGGER_TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("LOGGER_TELEGRAM_CHAT_ID")
 
-    if not bot_token or not chat_id:
+    if not bot_token:
+        return None
+
+    if not load_subscriber_chat_ids():
         return None
 
     root_logger = logging.getLogger()
@@ -88,7 +94,6 @@ def setup_telegram_error_logging(service_name: str) -> Optional[TelegramErrorHan
 
     telegram_handler = TelegramErrorHandler(
         bot_token=bot_token,
-        chat_id=chat_id,
         service_name=service_name,
     )
     telegram_handler.setLevel(logging.ERROR)
