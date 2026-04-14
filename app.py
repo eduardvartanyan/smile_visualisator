@@ -240,6 +240,13 @@ def load_task_meta(task_id: int) -> dict | None:
         return json.load(f)
 
 
+def response_preview(response: requests.Response, limit: int = 1000) -> str:
+    body = response.text[:limit]
+    if len(response.text) > limit:
+        body += "...(truncated)"
+    return f"status={response.status_code} body={body}"
+
+
 def download_file(url: str, dest_path: Path) -> None:
     response = requests.get(
         url,
@@ -247,6 +254,8 @@ def download_file(url: str, dest_path: Path) -> None:
         stream=True,
         proxies=get_requests_proxies_for_url(url),
     )
+    if response.status_code >= 400:
+        logger.error("event=download_file_failed url=%s %s", url, response_preview(response))
     response.raise_for_status()
 
     with open(dest_path, "wb") as f:
@@ -317,9 +326,11 @@ def create_animation_task(image_url: str, animate_prompt: str) -> dict:
         data = None
 
     if response.status_code >= 400:
+        logger.error("event=yesai_create_failed image_url=%s %s", image_url, response_preview(response))
         raise RuntimeError(f"Ошибка YesAI: status={response.status_code}, body={data or response.text}")
 
     if not data or not data.get("success"):
+        logger.error("event=yesai_create_invalid image_url=%s body=%s", image_url, data or response.text)
         raise RuntimeError(f"Ошибка создания задачи анимации: {data}")
 
     animation_data = data.get("results", {}).get("animation_data")
@@ -344,10 +355,12 @@ def get_animation_status(task_id: int) -> dict:
         data = None
 
     if response.status_code >= 400:
+        logger.error("event=yesai_status_failed task_id=%s %s", task_id, response_preview(response))
         raise RuntimeError(
             f"Ошибка проверки статуса YesAI: status={response.status_code}, body={data or response.text}")
 
     if not data or not data.get("success"):
+        logger.error("event=yesai_status_invalid task_id=%s body=%s", task_id, data or response.text)
         raise RuntimeError(f"Ошибка при проверке статуса: {data}")
 
     animation_data = data.get("results", {}).get("animation_data")

@@ -33,6 +33,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def response_preview(response: requests.Response, limit: int = 1000) -> str:
+    body = response.text[:limit]
+    if len(response.text) > limit:
+        body += "...(truncated)"
+    return f"status={response.status_code} body={body}"
+
+
 @dp.message(CommandStart())
 async def start(message: types.Message):
     await message.answer("Отправь фото — я оживлю его 🎬")
@@ -64,6 +71,12 @@ async def handle_photo(message: types.Message):
 
         logger.info("BACKEND STATUS=%s", r.status_code)
         logger.info("BACKEND RESPONSE=%s", r.text)
+        if r.status_code >= 400:
+            logger.error(
+                "event=backend_generate_video user_id=%s %s",
+                message.from_user.id if message.from_user else "unknown",
+                response_preview(r),
+            )
 
         r.raise_for_status()
 
@@ -82,6 +95,8 @@ async def handle_photo(message: types.Message):
 
             logger.info("TASK POLL STATUS=%s", r.status_code)
             logger.info("TASK POLL RESPONSE=%s", r.text)
+            if r.status_code >= 400:
+                logger.error("event=backend_task_poll task_id=%s %s", task_id, response_preview(r))
 
             r.raise_for_status()
 
@@ -94,7 +109,10 @@ async def handle_photo(message: types.Message):
                 break
 
     except Exception as e:
-        logger.exception("ERROR IN PHOTO HANDLER")
+        logger.exception(
+            "event=photo_handler_failed user_id=%s",
+            message.from_user.id if message.from_user else "unknown",
+        )
         await message.answer(f"Ошибка при обработке фото: {e}")
 
 

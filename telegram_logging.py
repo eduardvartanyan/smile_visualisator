@@ -43,10 +43,9 @@ class TelegramErrorHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            message = self.format(record)
+            message = self._format_record(record)
             text = (
-                f"[{self.service_name}] {record.levelname}\n"
-                f"host: {self.hostname}\n\n"
+                f"{self.service_name} | {record.levelname} | {self.hostname}\n\n"
                 f"{message}"
             )
 
@@ -58,6 +57,15 @@ class TelegramErrorHandler(logging.Handler):
             )
         except Exception:
             self.handleError(record)
+
+    @staticmethod
+    def _format_record(record: logging.LogRecord) -> str:
+        message = record.getMessage()
+        if record.exc_info:
+            formatter = logging.Formatter()
+            exc_text = formatter.formatException(record.exc_info)
+            return f"{message}\n{exc_text}"
+        return message
 
 
 def setup_telegram_error_logging(service_name: str) -> Optional[TelegramErrorHandler]:
