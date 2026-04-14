@@ -2,14 +2,16 @@ from dotenv import load_dotenv
 import os
 import json
 import uuid
+import time
 from pathlib import Path
 from enum import Enum
 import logging
 import sys
+from datetime import datetime
 
 import requests
 import replicate
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -55,10 +57,12 @@ STATIC_DIR = BASE_DIR / "static"
 GENERATED_DIR = STATIC_DIR / "generated"
 RESULT_DIR = STATIC_DIR / "result"
 TASKS_DIR = BASE_DIR / "tasks"
+REQUEST_LOGS_DIR = BASE_DIR / "request_logs"
 
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
 TASKS_DIR.mkdir(parents=True, exist_ok=True)
+REQUEST_LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 YES_CREATE_URL = "https://api.yesai.su/v2/yesvideo/aniimage/kling"
 YES_STATUS_URL_TEMPLATE = "https://api.yesai.su/v2/yesvideo/animations/{task_id}"
@@ -70,6 +74,74 @@ YES_DIMENSIONS = "16:9"
 
 app = FastAPI(title="Smile Visualization API")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+SENSITIVE_HEADERS = {"authorization", "x-api-key", "cookie"}
+
+
+def mask_headers(headers: dict[str, str]) -> dict[str, str]:
+    masked_headers = {}
+    for key, value in headers.items():
+        if key.lower() in SENSITIVE_HEADERS:
+            masked_headers[key] = "***"
+        else:
+            masked_headers[key] = value
+    return masked_headers
+
+
+def parse_request_body(body_bytes: bytes):
+    if not body_bytes:
+        return None
+
+    try:
+        return json.loads(body_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return body_bytes.decode("utf-8", errors="replace")
+
+
+def write_request_log(entry: dict) -> None:
+    log_date = datetime.now().astimezone().strftime("%Y-%m-%d")
+    log_path = REQUEST_LOGS_DIR / f"{log_date}.log"
+    with open(log_path, "a", encoding="utf-8") as log_file:
+        json.dump(entry, log_file, ensure_ascii=False)
+        log_file.write("\n")
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    started_at = time.time()
+    timestamp = datetime.now().astimezone().isoformat()
+    body_bytes = await request.body()
+
+    async def receive():
+        return {"type": "http.request", "body": body_bytes, "more_body": False}
+
+    request._receive = receive
+
+    response = None
+    error_message = None
+
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as exc:
+        error_message = str(exc)
+        raise
+    finally:
+        duration_ms = round((time.time() - started_at) * 1000, 2)
+        log_entry = {
+            "timestamp": timestamp,
+            "method": request.method,
+            "path": request.url.path,
+            "query_params": dict(request.query_params),
+            "client": request.client.host if request.client else None,
+            "headers": mask_headers(dict(request.headers)),
+            "body": parse_request_body(body_bytes),
+            "status_code": response.status_code if response else 500,
+            "duration_ms": duration_ms,
+        }
+        if error_message:
+            log_entry["error"] = error_message
+        write_request_log(log_entry)
 
 
 class Sex(str, Enum):
