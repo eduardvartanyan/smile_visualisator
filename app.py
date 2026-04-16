@@ -157,7 +157,8 @@ class GenerateMediaRequest(BaseModel):
     image_url: str
     edit_prompt: str = (
         "perfect white teeth, Hollywood smile, smooth nasolabial folds, "
-        "youthful face skin, natural skin texture, professional portrait retouching, realistic lighting"
+        "natural skin texture, professional portrait retouching, realistic lighting. "
+        "keep your hair color, eyebrow color, haircut, wrinkles, eye color"
     )
     animate_prompt: str = (
         "The person looks into the camera, smiles wide showing beautiful white teeth, "
