@@ -156,9 +156,11 @@ class Sex(str, Enum):
 class GenerateMediaRequest(BaseModel):
     image_url: str
     edit_prompt: str = (
-        "perfect white teeth, Hollywood smile, smooth nasolabial folds, "
-        "natural skin texture, professional portrait retouching, realistic lighting. "
-        "keep hair color, eyebrow color, haircut, wrinkles, eye color"
+        "Make perfect white teeth, Hollywood smile, smooth nasolabial folds, "
+        "natural skin texture, realistic lighting. "
+        # "Don't change face, just change mouth and smile"
+        # "keep hair color, eyebrow color, haircut, wrinkles, eye color, "
+        # "keep gender and age"
     )
     animate_prompt: str = (
         "The person looks into the camera, smiles wide showing beautiful white teeth, "
@@ -174,16 +176,33 @@ def enhance_edit_prompt_with_person_info(original_prompt: str, age: Optional[str
     """
     enhancements = []
 
-    # Добавляем информацию о поле
-    if sex:
-        if sex == Sex.male:
-            gender_desc = "man"
-        else:
-            gender_desc = "woman"
-
-        enhancements.append(gender_desc)
-
     # Добавляем информацию о возрасте
+    # if age:
+    #     # Очищаем возраст от текста, оставляем только цифры
+    #     age_clean = ''.join(filter(str.isdigit, age))
+    #
+    #     if age_clean:
+    #         age_num = int(age_clean)
+    #
+    #         # Подбираем описание возраста для английского промпта
+    #         if age_num < 12:
+    #             age_desc = f"child about {age_num} years old"
+    #         elif age_num < 18:
+    #             age_desc = f"teenager about {age_num} years old"
+    #         elif age_num < 30:
+    #             age_desc = f"young adult about {age_num} years old"
+    #         elif age_num < 45:
+    #             age_desc = f"adult about {age_num} years old"
+    #         elif age_num < 60:
+    #             age_desc = f"middle-aged person about {age_num} years old"
+    #         else:
+    #             age_desc = f"elderly person about {age_num} years old"
+    #
+    #         enhancements.append(age_desc)
+    #     else:
+    #         # Если в строке нет цифр, используем как есть
+    #         enhancements.append(age)
+
     if age:
         # Очищаем возраст от текста, оставляем только цифры
         age_clean = ''.join(filter(str.isdigit, age))
@@ -192,28 +211,41 @@ def enhance_edit_prompt_with_person_info(original_prompt: str, age: Optional[str
             age_num = int(age_clean)
 
             # Подбираем описание возраста для английского промпта
-            if age_num < 12:
-                age_desc = f"child about {age_num} years old"
-            elif age_num < 18:
-                age_desc = f"teenager about {age_num} years old"
-            elif age_num < 30:
-                age_desc = f"young adult about {age_num} years old"
-            elif age_num < 45:
-                age_desc = f"adult about {age_num} years old"
-            elif age_num < 60:
-                age_desc = f"middle-aged person about {age_num} years old"
+            if age_num < 7:
+                age_desc = f"On the photo little child about {age_num} years old"
+            elif age_num < 12:
+                age_desc = f"On the photo child about {age_num} years old"
+            elif age_num < 16:
+                age_desc = f"On the photo teenager about {age_num} years old"
+            # elif age_num < 30:
+            #     age_desc = f"young adult about {age_num} years old"
+            # elif age_num < 45:
+            #     age_desc = f"adult about {age_num} years old"
+            # elif age_num < 60:
+            #     age_desc = f"middle-aged person about {age_num} years old"
             else:
-                age_desc = f"elderly person about {age_num} years old"
+                age_desc = ""
 
             enhancements.append(age_desc)
         else:
             # Если в строке нет цифр, используем как есть
             enhancements.append(age)
 
+
+    # Добавляем информацию о поле
+    # if sex:
+    #     if sex == Sex.male:
+    #         gender_desc = "gender - male"
+    #     else:
+    #         gender_desc = "gender - female"
+    #
+    #     enhancements.append(gender_desc)
+
+
     # Формируем улучшенный промпт
     if enhancements:
         # Создаем описание человека в начале промпта
-        person_description = f"A {', '.join(enhancements)}. "
+        person_description = f"{', '.join(enhancements)}. "
 
         # Добавляем основную задачу по ретуши
         enhanced_prompt = person_description + original_prompt
@@ -398,13 +430,14 @@ def generate_image(payload: GenerateMediaRequest, x_api_key: str | None = Header
             "success": True,
             "source_image": payload.image_url,
             "generated_image": local_generated_image_url,
+            # "enhanced_edit_prompt": enhanced_edit_prompt,
         }
 
         # Добавляем информацию о возрасте и поле в ответ, если они были переданы
         if payload.age:
             response_data["age"] = payload.age
-        if payload.sex:
-            response_data["sex"] = payload.sex.value
+        # if payload.sex:
+        #     response_data["sex"] = payload.sex.value
 
         return response_data
 
