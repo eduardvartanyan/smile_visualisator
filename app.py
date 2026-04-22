@@ -80,7 +80,7 @@ YES_VERSION = "2.5"
 YES_DURATION = "5"
 YES_DIMENSIONS = "16:9"
 
-RUNWAY_MODEL = os.getenv("RUNWAY_IMAGE_TO_VIDEO_MODEL", "gen4_turbo")
+DEFAULT_RUNWAY_MODEL = os.getenv("RUNWAY_IMAGE_TO_VIDEO_MODEL", "gen4_turbo")
 RUNWAY_DURATION = int(os.getenv("RUNWAY_IMAGE_TO_VIDEO_DURATION", "5"))
 RUNWAY_RATIO = os.getenv("RUNWAY_IMAGE_TO_VIDEO_RATIO", "1280:720")
 
@@ -181,6 +181,7 @@ class GenerateMediaRequest(BaseModel):
     )
     age: Optional[str] = Field(None, description="Возраст человека на фото (например: '25', '35 лет', 'ребенок 7 лет')")
     sex: Optional[Sex] = Field(None, description="Пол человека на фото: m - мужской, f - женский")
+    mode: int = Field(2, description="Режим генерации видео для /generate-video: 1 - gen4_turbo, 2 - gen4.5")
 
 
 def enhance_edit_prompt_with_person_info(original_prompt: str, age: Optional[str], sex: Optional[Sex]) -> str:
@@ -362,8 +363,8 @@ def parse_ratio_value(ratio: str) -> float:
     return int(width) / int(height)
 
 
-def resolve_runway_ratio(image_url: str) -> str:
-    supported_ratios = RUNWAY_SUPPORTED_RATIOS_BY_MODEL.get(RUNWAY_MODEL)
+def resolve_runway_ratio(image_url: str, runway_model: str) -> str:
+    supported_ratios = RUNWAY_SUPPORTED_RATIOS_BY_MODEL.get(runway_model)
     if not supported_ratios:
         return RUNWAY_RATIO
 
@@ -380,7 +381,7 @@ def resolve_runway_ratio(image_url: str) -> str:
         image_url,
         width,
         height,
-        RUNWAY_MODEL,
+        runway_model,
         closest_ratio,
     )
 
@@ -489,12 +490,12 @@ def runway_task_to_dict(task) -> dict:
     return data
 
 
-def create_runway_video_task(image_url: str, animate_prompt: str) -> dict:
-    ratio = resolve_runway_ratio(image_url)
+def create_runway_video_task(image_url: str, animate_prompt: str, runway_model: str = DEFAULT_RUNWAY_MODEL) -> dict:
+    ratio = resolve_runway_ratio(image_url, runway_model)
 
     try:
         task = get_runway_client().image_to_video.create(
-            model=RUNWAY_MODEL,
+            model=runway_model,
             prompt_image=image_url,
             prompt_text=animate_prompt,
             duration=RUNWAY_DURATION,
@@ -512,9 +513,18 @@ def create_runway_video_task(image_url: str, animate_prompt: str) -> dict:
 
     return {
         "id": task_id,
+        "model": runway_model,
         "status": data.get("status", "PENDING"),
         "status_description": data.get("status", "PENDING"),
     }
+
+
+def resolve_runway_model_by_mode(mode: int) -> str:
+    if mode == 1:
+        return "gen4_turbo"
+    if mode == 2:
+        return "gen4.5"
+    raise HTTPException(status_code=400, detail="mode must be 1 or 2")
 
 
 def get_runway_task_status(task_id: str) -> dict:
@@ -647,6 +657,8 @@ def generate_video_runway(payload: GenerateMediaRequest, x_api_key: str | None =
         raise
 
     try:
+        runway_model = resolve_runway_model_by_mode(payload.mode)
+
         # Улучшаем промпт для изображения с учетом возраста и пола
         enhanced_edit_prompt = enhance_edit_prompt_with_person_info(
             payload.edit_prompt,
@@ -657,7 +669,11 @@ def generate_video_runway(payload: GenerateMediaRequest, x_api_key: str | None =
         remote_generated_image_url = generate_image_with_flux(payload.image_url, enhanced_edit_prompt)
         local_generated_image_url = save_generated_image_locally(remote_generated_image_url)
 
-        animation_data = create_runway_video_task(local_generated_image_url, payload.animate_prompt)
+        animation_data = create_runway_video_task(
+            local_generated_image_url,
+            payload.animate_prompt,
+            runway_model=runway_model,
+        )
 
         task_id = animation_data["id"]
         status_description = animation_data.get("status_description", animation_data.get("status", "unknown"))
@@ -665,6 +681,7 @@ def generate_video_runway(payload: GenerateMediaRequest, x_api_key: str | None =
         meta_data = {
             "task_id": task_id,
             "provider": "runway",
+            "model": runway_model,
             "source_image": payload.image_url,
             "generated_image": local_generated_image_url,
             "result": "",
@@ -692,6 +709,8 @@ def generate_video_runway(payload: GenerateMediaRequest, x_api_key: str | None =
             response_data["age"] = payload.age
         if payload.sex:
             response_data["sex"] = payload.sex.value
+        if payload.mode:
+            response_data["mode"] = payload.mode
 
         return response_data
 
