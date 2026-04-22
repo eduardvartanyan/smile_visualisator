@@ -11,6 +11,7 @@ from datetime import datetime
 
 import requests
 import replicate
+from runwayml import RunwayML
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
@@ -35,6 +36,7 @@ setup_telegram_error_logging("ai-backend")
 
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 YES_API_TOKEN = os.getenv("YES_API_TOKEN")
+RUNWAY_API_TOKEN = os.getenv("RUNWAY_API_TOKEN")
 BACKEND_API_TOKEN = os.getenv("BACKEND_API_TOKEN")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
 
@@ -75,6 +77,10 @@ YES_CUSTOMER_ID = "ncsehpgt"
 YES_VERSION = "2.5"
 YES_DURATION = "5"
 YES_DIMENSIONS = "16:9"
+
+RUNWAY_MODEL = os.getenv("RUNWAY_IMAGE_TO_VIDEO_MODEL", "gen4_turbo")
+RUNWAY_DURATION = int(os.getenv("RUNWAY_IMAGE_TO_VIDEO_DURATION", "5"))
+RUNWAY_RATIO = os.getenv("RUNWAY_IMAGE_TO_VIDEO_RATIO", "1280:720")
 
 app = FastAPI(title="Smile Visualization API")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -255,16 +261,16 @@ def enhance_edit_prompt_with_person_info(original_prompt: str, age: Optional[str
     return enhanced_prompt
 
 
-def task_file_path(task_id: int) -> Path:
+def task_file_path(task_id: str | int) -> Path:
     return TASKS_DIR / f"{task_id}.json"
 
 
-def save_task_meta(task_id: int, data: dict) -> None:
+def save_task_meta(task_id: str | int, data: dict) -> None:
     with open(task_file_path(task_id), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def load_task_meta(task_id: int) -> dict | None:
+def load_task_meta(task_id: str | int) -> dict | None:
     path = task_file_path(task_id)
     if not path.exists():
         return None
@@ -403,6 +409,76 @@ def get_animation_status(task_id: int) -> dict:
     return animation_data
 
 
+def get_runway_client() -> RunwayML:
+    if not RUNWAY_API_TOKEN:
+        raise RuntimeError("RUNWAY_API_TOKEN или RUNWAYML_API_SECRET не найден")
+
+    os.environ.setdefault("RUNWAYML_API_SECRET", RUNWAY_API_TOKEN)
+    return RunwayML()
+
+
+def runway_task_to_dict(task) -> dict:
+    if isinstance(task, dict):
+        return task
+
+    data = {}
+    for field in ("id", "status", "created_at", "createdAt", "failure", "failure_code", "output"):
+        value = getattr(task, field, None)
+        if value is not None:
+            data[field] = value
+
+    if hasattr(task, "model_dump"):
+        try:
+            dumped = task.model_dump(exclude_none=True)
+            if isinstance(dumped, dict):
+                data.update(dumped)
+        except Exception:
+            pass
+
+    return data
+
+
+def create_runway_video_task(image_url: str, animate_prompt: str) -> dict:
+    try:
+        task = get_runway_client().image_to_video.create(
+            model=RUNWAY_MODEL,
+            prompt_image=image_url,
+            prompt_text=animate_prompt,
+            duration=RUNWAY_DURATION,
+            ratio=RUNWAY_RATIO,
+        )
+    except Exception as e:
+        logger.error("event=runway_create_failed image_url=%s error=%s", image_url, str(e), exc_info=True)
+        raise RuntimeError(f"Ошибка создания задачи Runway: {str(e)}")
+
+    data = runway_task_to_dict(task)
+    task_id = data.get("id")
+    if not task_id:
+        logger.error("event=runway_create_invalid image_url=%s body=%s", image_url, data)
+        raise RuntimeError(f"Ошибка создания задачи Runway: {data}")
+
+    return {
+        "id": task_id,
+        "status": data.get("status", "PENDING"),
+        "status_description": data.get("status", "PENDING"),
+    }
+
+
+def get_runway_task_status(task_id: str) -> dict:
+    try:
+        task = get_runway_client().tasks.retrieve(task_id)
+    except Exception as e:
+        logger.error("event=runway_status_failed task_id=%s error=%s", task_id, str(e), exc_info=True)
+        raise RuntimeError(f"Ошибка проверки статуса Runway: {str(e)}")
+
+    data = runway_task_to_dict(task)
+    if not isinstance(data, dict) or not data.get("id"):
+        logger.error("event=runway_status_invalid task_id=%s body=%s", task_id, data)
+        raise RuntimeError(f"Ошибка при проверке статуса Runway: {data}")
+
+    return data
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -510,19 +586,96 @@ def generate_video(payload: GenerateMediaRequest, x_api_key: str | None = Header
         raise HTTPException(status_code=500, detail="error")
 
 
-@app.get("/task/{task_id}")
-def task_status(task_id: int, x_api_key: str | None = Header(default=None)):
+@app.post("/generate-video-test")
+def generate_video_test(payload: GenerateMediaRequest, x_api_key: str | None = Header(default=None)):
     try:
         check_api_key(x_api_key)
     except HTTPException:
         raise
 
     try:
-        animation_data = get_animation_status(task_id)
+        # Улучшаем промпт для изображения с учетом возраста и пола
+        enhanced_edit_prompt = enhance_edit_prompt_with_person_info(
+            payload.edit_prompt,
+            payload.age,
+            payload.sex
+        )
+
+        remote_generated_image_url = generate_image_with_flux(payload.image_url, enhanced_edit_prompt)
+        local_generated_image_url = save_generated_image_locally(remote_generated_image_url)
+
+        animation_data = create_runway_video_task(local_generated_image_url, payload.animate_prompt)
+
+        task_id = animation_data["id"]
+        status_description = animation_data.get("status_description", animation_data.get("status", "unknown"))
+
+        meta_data = {
+            "task_id": task_id,
+            "provider": "runway",
+            "source_image": payload.image_url,
+            "generated_image": local_generated_image_url,
+            "result": "",
+            "result_cached": False,
+        }
+
+        # Сохраняем возраст и пол в метаданные задачи
+        if payload.age:
+            meta_data["age"] = payload.age
+        if payload.sex:
+            meta_data["sex"] = payload.sex.value
+
+        save_task_meta(task_id, meta_data)
+
+        response_data = {
+            "success": True,
+            "task_id": task_id,
+            "status_description": status_description,
+            "source_image": payload.image_url,
+            "generated_image": local_generated_image_url,
+        }
+
+        # Добавляем информацию о возрасте и поле в ответ
+        if payload.age:
+            response_data["age"] = payload.age
+        if payload.sex:
+            response_data["sex"] = payload.sex.value
+
+        return response_data
+
+    except Exception as e:
+        # Логируем полную ошибку на сервере
+        logger.error(f"Error in generate_video_test: {str(e)}", exc_info=True)
+        # Клиенту возвращаем только статус ошибки
+        raise HTTPException(status_code=500, detail="error")
+
+
+@app.get("/task/{task_id}")
+def task_status(task_id: str, x_api_key: str | None = Header(default=None)):
+    try:
+        check_api_key(x_api_key)
+    except HTTPException:
+        raise
+
+    try:
         meta = load_task_meta(task_id) or {}
+        provider = meta.get("provider", "yesai")
+
+        if provider == "runway":
+            animation_data = get_runway_task_status(task_id)
+            remote_result_url = ""
+            output = animation_data.get("output")
+            if isinstance(output, list) and output:
+                remote_result_url = output[0]
+            elif isinstance(output, str):
+                remote_result_url = output
+
+            status_description = animation_data.get("status", "unknown")
+        else:
+            animation_data = get_animation_status(task_id)
+            remote_result_url = animation_data.get("result_url", "")
+            status_description = animation_data.get("status_description", "unknown")
 
         result_url = meta.get("result", "")
-        remote_result_url = animation_data.get("result_url", "")
 
         if remote_result_url and not meta.get("result_cached", False):
             local_result_url = save_result_video_locally(remote_result_url)
@@ -534,7 +687,7 @@ def task_status(task_id: int, x_api_key: str | None = Header(default=None)):
         response_data = {
             "success": True,
             "task_id": task_id,
-            "status_description": animation_data.get("status_description", "unknown"),
+            "status_description": status_description,
             "source_image": meta.get("source_image", ""),
             "generated_image": meta.get("generated_image", ""),
             "result": result_url,
