@@ -2,6 +2,7 @@ aiogram
 aiohttp-socks
 fastapi
 python-dotenv
+Pillow
 replicate
 requests
 runwayml

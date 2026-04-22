@@ -3,6 +3,7 @@ import os
 import json
 import uuid
 import time
+from io import BytesIO
 from pathlib import Path
 from enum import Enum
 import logging
@@ -11,6 +12,7 @@ from datetime import datetime
 
 import requests
 import replicate
+from PIL import Image
 from runwayml import RunwayML
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.staticfiles import StaticFiles
@@ -81,6 +83,11 @@ YES_DIMENSIONS = "16:9"
 RUNWAY_MODEL = os.getenv("RUNWAY_IMAGE_TO_VIDEO_MODEL", "gen4_turbo")
 RUNWAY_DURATION = int(os.getenv("RUNWAY_IMAGE_TO_VIDEO_DURATION", "5"))
 RUNWAY_RATIO = os.getenv("RUNWAY_IMAGE_TO_VIDEO_RATIO", "1280:720")
+
+RUNWAY_SUPPORTED_RATIOS_BY_MODEL = {
+    "gen4_turbo": ("1280:720", "1584:672", "1104:832", "720:1280", "832:1104", "960:960"),
+    "gen4.5": ("1280:720", "1584:672", "1104:832", "720:1280", "832:1104", "672:1584", "960:960"),
+}
 
 app = FastAPI(title="Smile Visualization API")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -336,6 +343,50 @@ def save_result_video_locally(remote_video_url: str) -> str:
     return f"{PUBLIC_BASE_URL}/static/result/{file_name}"
 
 
+def get_image_size_from_url(image_url: str) -> tuple[int, int]:
+    response = requests.get(
+        image_url,
+        timeout=120,
+        proxies=get_requests_proxies_for_url(image_url),
+    )
+    if response.status_code >= 400:
+        logger.error("event=image_size_fetch_failed url=%s %s", image_url, response_preview(response))
+    response.raise_for_status()
+
+    with Image.open(BytesIO(response.content)) as image:
+        return image.size
+
+
+def parse_ratio_value(ratio: str) -> float:
+    width, height = ratio.split(":")
+    return int(width) / int(height)
+
+
+def resolve_runway_ratio(image_url: str) -> str:
+    supported_ratios = RUNWAY_SUPPORTED_RATIOS_BY_MODEL.get(RUNWAY_MODEL)
+    if not supported_ratios:
+        return RUNWAY_RATIO
+
+    width, height = get_image_size_from_url(image_url)
+    image_ratio = width / height
+
+    closest_ratio = min(
+        supported_ratios,
+        key=lambda ratio: abs(parse_ratio_value(ratio) - image_ratio),
+    )
+
+    logger.info(
+        "event=runway_ratio_resolved image_url=%s image_size=%sx%s model=%s ratio=%s",
+        image_url,
+        width,
+        height,
+        RUNWAY_MODEL,
+        closest_ratio,
+    )
+
+    return closest_ratio
+
+
 def create_animation_task(image_url: str, animate_prompt: str) -> dict:
     headers = {
         "Authorization": f"Bearer {YES_API_TOKEN}",
@@ -439,13 +490,15 @@ def runway_task_to_dict(task) -> dict:
 
 
 def create_runway_video_task(image_url: str, animate_prompt: str) -> dict:
+    ratio = resolve_runway_ratio(image_url)
+
     try:
         task = get_runway_client().image_to_video.create(
             model=RUNWAY_MODEL,
             prompt_image=image_url,
             prompt_text=animate_prompt,
             duration=RUNWAY_DURATION,
-            ratio=RUNWAY_RATIO,
+            ratio=ratio,
         )
     except Exception as e:
         logger.error("event=runway_create_failed image_url=%s error=%s", image_url, str(e), exc_info=True)
