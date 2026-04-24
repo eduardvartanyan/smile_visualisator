@@ -587,7 +587,7 @@ def generate_image(payload: GenerateMediaRequest, x_api_key: str | None = Header
         raise HTTPException(status_code=500, detail="error")
 
 
-@app.post("/generate-video-test")
+@app.post("/generate-video")
 def generate_video_kling(payload: GenerateMediaRequest, x_api_key: str | None = Header(default=None)):
     try:
         check_api_key(x_api_key)
@@ -649,7 +649,7 @@ def generate_video_kling(payload: GenerateMediaRequest, x_api_key: str | None = 
         raise HTTPException(status_code=500, detail="error")
 
 
-@app.post("/generate-video")
+@app.post("/generate-video-test")
 def generate_video_runway(payload: GenerateMediaRequest, x_api_key: str | None = Header(default=None)):
     try:
         check_api_key(x_api_key)
