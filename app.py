@@ -66,11 +66,13 @@ GENERATED_DIR = STATIC_DIR / "generated"
 RESULT_DIR = STATIC_DIR / "result"
 TASKS_DIR = BASE_DIR / "tasks"
 REQUEST_LOGS_DIR = BASE_DIR / "request_logs"
+REPLICATE_LOGS_DIR = BASE_DIR / "replicate_logs"
 
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
 TASKS_DIR.mkdir(parents=True, exist_ok=True)
 REQUEST_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+REPLICATE_LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 YES_CREATE_URL = "https://api.yesai.su/v2/yesvideo/aniimage/kling"
 YES_STATUS_URL_TEMPLATE = "https://api.yesai.su/v2/yesvideo/animations/{task_id}"
@@ -118,6 +120,50 @@ def parse_request_body(body_bytes: bytes):
 def write_request_log(entry: dict) -> None:
     log_date = datetime.now().astimezone().strftime("%Y-%m-%d")
     log_path = REQUEST_LOGS_DIR / f"{log_date}.log"
+    with open(log_path, "a", encoding="utf-8") as log_file:
+        json.dump(entry, log_file, ensure_ascii=False)
+        log_file.write("\n")
+
+
+def serialize_for_log(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, dict):
+        return {str(key): serialize_for_log(item) for key, item in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [serialize_for_log(item) for item in value]
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return serialize_for_log(model_dump())
+        except Exception:
+            pass
+
+    dict_method = getattr(value, "dict", None)
+    if callable(dict_method):
+        try:
+            return serialize_for_log(dict_method())
+        except Exception:
+            pass
+
+    url = getattr(value, "url", None)
+    if callable(url):
+        try:
+            return {"url": url()}
+        except Exception:
+            pass
+    if url is not None:
+        return {"url": str(url)}
+
+    return repr(value)
+
+
+def write_replicate_log(entry: dict) -> None:
+    log_date = datetime.now().astimezone().strftime("%Y-%m-%d")
+    log_path = REPLICATE_LOGS_DIR / f"{log_date}.log"
     with open(log_path, "a", encoding="utf-8") as log_file:
         json.dump(entry, log_file, ensure_ascii=False)
         log_file.write("\n")
@@ -317,13 +363,36 @@ def generate_image_with_flux(source_image_url: str, prompt: str) -> str:
         "input_image": source_image_url,
         "output_format": "jpg",
     }
+    log_entry = {
+        "timestamp": datetime.now().astimezone().isoformat(),
+        "provider": "replicate",
+        "model": "black-forest-labs/flux-kontext-pro",
+        "operation": "generate_image_with_flux",
+        "input": serialize_for_log(input_data),
+        "source_image_url": source_image_url,
+    }
 
-    output = replicate.run(
-        "black-forest-labs/flux-kontext-pro",
-        input=input_data,
-    )
+    try:
+        output = replicate.run(
+            "black-forest-labs/flux-kontext-pro",
+            input=input_data,
+        )
+    except Exception as exc:
+        log_entry["success"] = False
+        log_entry["error"] = str(exc)
+        write_replicate_log(log_entry)
+        raise
 
-    return output.url
+    output_url = getattr(output, "url", None)
+    if callable(output_url):
+        output_url = output_url()
+
+    log_entry["success"] = True
+    log_entry["output"] = serialize_for_log(output)
+    log_entry["output_url"] = output_url
+    write_replicate_log(log_entry)
+
+    return output_url
 
 
 def save_generated_image_locally(remote_image_url: str) -> str:

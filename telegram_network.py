@@ -2,8 +2,9 @@ import os
 from urllib.parse import urlparse
 
 
-TELEGRAM_HOSTS = {
+PROXIED_HOSTS = {
     "api.telegram.org",
+    "replicate.delivery",
 }
 
 
@@ -22,7 +23,7 @@ def get_requests_proxies_for_url(url: str) -> dict[str, str] | None:
         return None
 
     hostname = urlparse(url).hostname
-    if hostname not in TELEGRAM_HOSTS:
+    if hostname not in PROXIED_HOSTS:
         return None
 
     return {
@@ -32,4 +33,4 @@ def get_requests_proxies_for_url(url: str) -> dict[str, str] | None:
 
 
 def is_telegram_url(url: str) -> bool:
-    return urlparse(url).hostname in TELEGRAM_HOSTS
+    return urlparse(url).hostname == "api.telegram.org"
