@@ -340,6 +340,61 @@ def response_preview(response: requests.Response, limit: int = 1000) -> str:
     return f"status={response.status_code} body={body}"
 
 
+class SourceImageUnavailableError(RuntimeError):
+    def __init__(self, image_url: str, reason: str, status_code: int | None = None):
+        super().__init__(reason)
+        self.image_url = image_url
+        self.reason = reason
+        self.status_code = status_code
+
+
+def validate_source_image_url(image_url: str) -> None:
+    try:
+        response = requests.get(
+            image_url,
+            timeout=20,
+            stream=True,
+            proxies=get_requests_proxies_for_url(image_url),
+        )
+    except requests.RequestException as exc:
+        raise SourceImageUnavailableError(
+            image_url,
+            f"backend не смог открыть URL исходного изображения: {exc}",
+        ) from exc
+
+    try:
+        if response.status_code >= 400:
+            raise SourceImageUnavailableError(
+                image_url,
+                f"сервер с исходным изображением вернул HTTP {response.status_code}",
+                status_code=response.status_code,
+            )
+    finally:
+        response.close()
+
+
+def is_provider_source_image_404(exc: Exception, image_url: str) -> bool:
+    error_text = str(exc)
+    return (
+        "404 Client Error" in error_text
+        and "Not Found" in error_text
+        and image_url in error_text
+    )
+
+
+def log_source_image_unavailable(operation: str, error: SourceImageUnavailableError) -> None:
+    logger.error(
+        "Ошибка исходного изображения в %s\n"
+        "URL: %s\n"
+        "Причина: %s\n"
+        "Что проверить: файл существует по этому адресу, ссылка публична без авторизации, "
+        "имя файла и регистр букв совпадают, временная ссылка не истекла.",
+        operation,
+        error.image_url,
+        error.reason,
+    )
+
+
 def download_file(url: str, dest_path: Path) -> None:
     response = requests.get(
         url,
@@ -358,6 +413,8 @@ def download_file(url: str, dest_path: Path) -> None:
 
 
 def generate_image_with_flux(source_image_url: str, prompt: str) -> str:
+    validate_source_image_url(source_image_url)
+
     input_data = {
         "prompt": prompt,
         "input_image": source_image_url,
@@ -381,6 +438,12 @@ def generate_image_with_flux(source_image_url: str, prompt: str) -> str:
         log_entry["success"] = False
         log_entry["error"] = str(exc)
         write_replicate_log(log_entry)
+        if is_provider_source_image_404(exc, source_image_url):
+            raise SourceImageUnavailableError(
+                source_image_url,
+                "Replicate/Flux не смог скачать исходное изображение: HTTP 404 Not Found",
+                status_code=404,
+            ) from exc
         raise
 
     output_url = getattr(output, "url", None)
@@ -588,11 +651,11 @@ def create_runway_video_task(image_url: str, animate_prompt: str, runway_model: 
     }
 
 
-def resolve_runway_model_by_mode(mode: int) -> str:
+def resolve_runway_model_by_mode(mode: int | None) -> str:
+    if mode is None or mode == 2:
+        return "gen4.5"
     if mode == 1:
         return "gen4_turbo"
-    if mode == 2:
-        return "gen4.5"
     raise HTTPException(status_code=400, detail="mode must be 1 or 2")
 
 
@@ -649,6 +712,17 @@ def generate_image(payload: GenerateMediaRequest, x_api_key: str | None = Header
 
         return response_data
 
+    except SourceImageUnavailableError as e:
+        log_source_image_unavailable("generate_image", e)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "source_image_unavailable",
+                "image_url": e.image_url,
+                "reason": e.reason,
+            },
+        )
+
     except Exception as e:
         # Логируем полную ошибку на сервере
         logger.error(f"Error in generate_image: {str(e)}", exc_info=True)
@@ -656,7 +730,7 @@ def generate_image(payload: GenerateMediaRequest, x_api_key: str | None = Header
         raise HTTPException(status_code=500, detail="error")
 
 
-@app.post("/generate-video")
+@app.post("/generate-video-test")
 def generate_video_kling(payload: GenerateMediaRequest, x_api_key: str | None = Header(default=None)):
     try:
         check_api_key(x_api_key)
@@ -711,14 +785,25 @@ def generate_video_kling(payload: GenerateMediaRequest, x_api_key: str | None = 
 
         return response_data
 
+    except SourceImageUnavailableError as e:
+        log_source_image_unavailable("generate_video_test", e)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "source_image_unavailable",
+                "image_url": e.image_url,
+                "reason": e.reason,
+            },
+        )
+
     except Exception as e:
         # Логируем полную ошибку на сервере
-        logger.error(f"Error in generate_video: {str(e)}", exc_info=True)
+        logger.error(f"Error in generate_video_test: {str(e)}", exc_info=True)
         # Клиенту возвращаем только статус ошибки
         raise HTTPException(status_code=500, detail="error")
 
 
-@app.post("/generate-video-test")
+@app.post("/generate-video")
 def generate_video_runway(payload: GenerateMediaRequest, x_api_key: str | None = Header(default=None)):
     try:
         check_api_key(x_api_key)
@@ -783,9 +868,20 @@ def generate_video_runway(payload: GenerateMediaRequest, x_api_key: str | None =
 
         return response_data
 
+    except SourceImageUnavailableError as e:
+        log_source_image_unavailable("generate_video", e)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "source_image_unavailable",
+                "image_url": e.image_url,
+                "reason": e.reason,
+            },
+        )
+
     except Exception as e:
         # Логируем полную ошибку на сервере
-        logger.error(f"Error in generate_video_test: {str(e)}", exc_info=True)
+        logger.error(f"Error in generate_video: {str(e)}", exc_info=True)
         # Клиенту возвращаем только статус ошибки
         raise HTTPException(status_code=500, detail="error")
 
